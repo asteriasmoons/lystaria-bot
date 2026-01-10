@@ -1,0 +1,45 @@
+name: Announce blog posts
+
+on:
+  push:
+    branches: [main]
+    # Change this to your real blog content directory once confirmed.
+    # If you're using Astro content collections, this is often src/content/blog/**
+    paths:
+      - "src/content/blog/**"
+      - "content/blog/**"
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontmatter parser
+        run: npm i gray-matter
+
+      - name: Announce changed posts
+        env:
+          ENDPOINT: ${{ secrets.ANNOUNCER_ENDPOINT }}
+          SECRET: ${{ secrets.ANNOUNCER_SECRET }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+
+          # Set ONE of these to match your repo. Leave the other empty if you want.
+          BLOG_CONTENT_DIR_1: "src/content/blog"
+          BLOG_CONTENT_DIR_2: "content/blog"
+
+          # Your public URL prefix (you said it's /blog/<slug>)
+          PUBLIC_BLOG_PREFIX: "/blog"
+
+          GITHUB_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node .github/scripts/announce-blog.js
