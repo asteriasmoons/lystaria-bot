@@ -10,7 +10,7 @@ const {
   ANNOUNCE_CHANNEL_ID,
   PING_ROLE_ID,
   MONGODB_URI,
-  MONGODB_DB_NAME = "lystaria_announcer",
+  MONGODB_DB_NAME = "lystaria_bot",
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN in .env");
