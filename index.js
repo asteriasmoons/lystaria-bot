@@ -11,6 +11,7 @@ const {
   PING_ROLE_ID,
   MONGODB_URI,
   MONGODB_DB_NAME = "lystaria_bot",
+  EMBED_COLOR = "#00dbff", // <-- NEW (default if env var not set)
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN in .env");
@@ -27,6 +28,35 @@ app.use(express.json({ limit: "1mb" }));
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
+
+// --------------------
+// Helpers
+// --------------------
+function parseEmbedColor(input) {
+  // Accepts: "#RRGGBB" or "RRGGBB"
+  if (!input || typeof input !== "string") return undefined;
+  const hex = input.trim().replace(/^#/, "");
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return undefined;
+  return parseInt(hex, 16);
+}
+
+function requireSecret(req, res) {
+  const secret = req.header("X-Make-Secret");
+  if (!secret || secret !== MAKE_SECRET) {
+    res.status(401).json({ ok: false, error: "Unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+function isValidUrl(str) {
+  try {
+    new URL(str);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // --------------------
 // MongoDB (permanent dedupe)
@@ -69,24 +99,6 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-function requireSecret(req, res) {
-  const secret = req.header("X-Make-Secret");
-  if (!secret || secret !== MAKE_SECRET) {
-    res.status(401).json({ ok: false, error: "Unauthorized" });
-    return false;
-  }
-  return true;
-}
-
-function isValidUrl(str) {
-  try {
-    new URL(str);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 app.post("/make/blog-published", async (req, res) => {
   if (!requireSecret(req, res)) return;
 
@@ -111,8 +123,7 @@ app.post("/make/blog-published", async (req, res) => {
     seen.set(requestId, Date.now());
   }
 
-  // Permanent dedupe (MongoDB)
-  // We dedupe by URL because it's stable and uniquely identifies the post.
+  // Permanent dedupe (MongoDB) by URL
   try {
     await AnnouncedPost.create({
       url,
@@ -137,9 +148,11 @@ app.post("/make/blog-published", async (req, res) => {
     }
 
     const roleMention = `<@&${PING_ROLE_ID}>`;
+    const embedColor = parseEmbedColor(EMBED_COLOR);
 
     // Discord embed object
     const embed = {
+      color: embedColor, // <-- NEW
       title: title.slice(0, 256),
       url,
       description:
@@ -150,16 +163,16 @@ app.post("/make/blog-published", async (req, res) => {
         typeof image === "string" && isValidUrl(image)
           ? { url: image }
           : undefined,
-      // timestamp is optional; if you want, we can accept post.publishedAt later
+      // timestamp optional later
     };
 
-    // You wanted role mention + link posted
+    // Role mention + link posted
     const content = `${roleMention}\n${url}`;
 
     const msg = await channel.send({
       content,
       embeds: [embed],
-      allowedMentions: { roles: [PING_ROLE_ID] }, // ensures only that role is mentionable
+      allowedMentions: { roles: [PING_ROLE_ID] },
     });
 
     return res.json({ ok: true, messageId: msg.id });
