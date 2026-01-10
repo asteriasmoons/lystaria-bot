@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import mongoose from "mongoose";
 import { Client, GatewayIntentBits } from "discord.js";
 
 const {
@@ -8,6 +9,8 @@ const {
   MAKE_SECRET,
   ANNOUNCE_CHANNEL_ID,
   PING_ROLE_ID,
+  MONGODB_URI,
+  MONGODB_DB_NAME = "lystaria_announcer",
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN in .env");
@@ -15,6 +18,7 @@ if (!MAKE_SECRET) throw new Error("Missing MAKE_SECRET in .env");
 if (!ANNOUNCE_CHANNEL_ID)
   throw new Error("Missing ANNOUNCE_CHANNEL_ID in .env");
 if (!PING_ROLE_ID) throw new Error("Missing PING_ROLE_ID in .env");
+if (!MONGODB_URI) throw new Error("Missing MONGODB_URI in .env");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -24,8 +28,37 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-// Simple in-memory dedupe (optional but helpful)
-// If Make retries the same requestId, we avoid double-posting.
+// --------------------
+// MongoDB (permanent dedupe)
+// --------------------
+const announcedPostSchema = new mongoose.Schema(
+  {
+    // Primary dedupe key (stable across re-runs)
+    url: { type: String, required: true, unique: true, index: true },
+
+    // Optional metadata (nice for debugging)
+    title: { type: String },
+    requestId: { type: String },
+    sha: { type: String },
+
+    announcedAt: { type: Date, default: Date.now },
+  },
+  { collection: "announced_posts" }
+);
+
+const AnnouncedPost = mongoose.model("AnnouncedPost", announcedPostSchema);
+
+async function connectMongo() {
+  // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+  if (mongoose.connection.readyState === 1) return;
+
+  await mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB_NAME });
+  console.log("Mongo connected");
+}
+
+// --------------------
+// Simple in-memory dedupe (still helpful for rapid retries)
+// --------------------
 const seen = new Map(); // requestId -> timestamp
 const TTL_MS = 10 * 60 * 1000;
 
@@ -57,7 +90,7 @@ function isValidUrl(str) {
 app.post("/make/blog-published", async (req, res) => {
   if (!requireSecret(req, res)) return;
 
-  const { requestId, post } = req.body || {};
+  const { requestId, post, sha } = req.body || {};
   const title = post?.title;
   const url = post?.url;
   const excerpt = post?.excerpt;
@@ -72,10 +105,27 @@ app.post("/make/blog-published", async (req, res) => {
       .json({ ok: false, error: "Missing/invalid post.url" });
   }
 
-  // Dedupe
+  // In-memory dedupe (quick retry shield)
   if (requestId && typeof requestId === "string") {
     if (seen.has(requestId)) return res.json({ ok: true, deduped: true });
     seen.set(requestId, Date.now());
+  }
+
+  // Permanent dedupe (MongoDB)
+  // We dedupe by URL because it's stable and uniquely identifies the post.
+  try {
+    await AnnouncedPost.create({
+      url,
+      title: typeof title === "string" ? title.slice(0, 256) : undefined,
+      requestId: typeof requestId === "string" ? requestId : undefined,
+      sha: typeof sha === "string" ? sha : undefined,
+    });
+  } catch (e) {
+    // Duplicate key error => already announced
+    if (e?.code === 11000) {
+      return res.json({ ok: true, deduped: true });
+    }
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 
   try {
@@ -103,8 +153,7 @@ app.post("/make/blog-published", async (req, res) => {
       // timestamp is optional; if you want, we can accept post.publishedAt later
     };
 
-    // If you want the link "posted" outside the embed too, include it in content.
-    // Otherwise the embed title is clickable, which many people consider enough.
+    // You wanted role mention + link posted
     const content = `${roleMention}\n${url}`;
 
     const msg = await channel.send({
@@ -121,8 +170,16 @@ app.post("/make/blog-published", async (req, res) => {
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
-client.once("ready", () => {
+client.once("ready", async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
+
+  try {
+    await connectMongo();
+  } catch (e) {
+    console.error("Mongo connection failed:", e?.message || e);
+    process.exit(1);
+  }
+
   app.listen(Number(PORT), () =>
     console.log(`HTTP server listening on ${PORT}`)
   );
