@@ -6,8 +6,8 @@ on:
     # Change this to your real blog content directory once confirmed.
     # If you're using Astro content collections, this is often src/content/blog/**
     paths:
-      - "src/content/blog/**"
-      - "content/blog/**"
+      - "src/content/posts/**"
+      - "content/posts/**"
 
 jobs:
   announce:
