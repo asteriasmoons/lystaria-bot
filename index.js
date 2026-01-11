@@ -11,7 +11,7 @@ const {
   PING_ROLE_ID,
   MONGODB_URI,
   MONGODB_DB_NAME = "lystaria_bot",
-  EMBED_COLOR = "#00dbff", // <-- NEW (default if env var not set)
+  EMBED_COLOR = "#00dbff",
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN in .env");
@@ -33,7 +33,6 @@ const client = new Client({
 // Helpers
 // --------------------
 function parseEmbedColor(input) {
-  // Accepts: "#RRGGBB" or "RRGGBB"
   if (!input || typeof input !== "string") return undefined;
   const hex = input.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}$/.test(hex)) return undefined;
@@ -79,25 +78,10 @@ const announcedPostSchema = new mongoose.Schema(
 const AnnouncedPost = mongoose.model("AnnouncedPost", announcedPostSchema);
 
 async function connectMongo() {
-  // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
   if (mongoose.connection.readyState === 1) return;
-
   await mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB_NAME });
   console.log("Mongo connected");
 }
-
-// --------------------
-// Simple in-memory dedupe (still helpful for rapid retries)
-// --------------------
-const seen = new Map(); // requestId -> timestamp
-const TTL_MS = 10 * 60 * 1000;
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, ts] of seen) {
-    if (now - ts > TTL_MS) seen.delete(id);
-  }
-}, 60 * 1000).unref();
 
 app.post("/make/blog-published", async (req, res) => {
   if (!requireSecret(req, res)) return;
@@ -117,12 +101,6 @@ app.post("/make/blog-published", async (req, res) => {
       .json({ ok: false, error: "Missing/invalid post.url" });
   }
 
-  // In-memory dedupe (quick retry shield)
-  if (requestId && typeof requestId === "string") {
-    if (seen.has(requestId)) return res.json({ ok: true, deduped: true });
-    seen.set(requestId, Date.now());
-  }
-
   // Permanent dedupe (MongoDB) by URL
   try {
     await AnnouncedPost.create({
@@ -132,7 +110,6 @@ app.post("/make/blog-published", async (req, res) => {
       sha: typeof sha === "string" ? sha : undefined,
     });
   } catch (e) {
-    // Duplicate key error => already announced
     if (e?.code === 11000) {
       return res.json({ ok: true, deduped: true });
     }
@@ -150,9 +127,8 @@ app.post("/make/blog-published", async (req, res) => {
     const roleMention = `<@&${PING_ROLE_ID}>`;
     const embedColor = parseEmbedColor(EMBED_COLOR);
 
-    // Discord embed object
     const embed = {
-      color: embedColor, // <-- NEW
+      color: embedColor,
       title: title.slice(0, 256),
       url,
       description:
@@ -163,10 +139,8 @@ app.post("/make/blog-published", async (req, res) => {
         typeof image === "string" && isValidUrl(image)
           ? { url: image }
           : undefined,
-      // timestamp optional later
     };
 
-    // Role mention + link posted
     const content = `${roleMention}\n${url}`;
 
     const msg = await channel.send({
